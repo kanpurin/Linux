@@ -17,24 +17,70 @@ with open(src, "rb") as f:
     data = f.read()
 
 lines = [bytearray()]
+soft = [False]
 row = 0
 col = 0
+wrap_pending = False
 i = 0
 
 def ensure_row(r):
     while len(lines) <= r:
         lines.append(bytearray())
+        soft.append(False)
+
+def mark_soft(r, value):
+    ensure_row(r)
+    soft[r] = value
+
+def clamp_col():
+    global col
+    if col < 0:
+        col = 0
+    if col >= cols:
+        col = cols - 1
+
+def clear_wrap_pending():
+    global wrap_pending, col
+    if wrap_pending:
+        wrap_pending = False
+        col = cols - 1
+
+def before_printable():
+    global row, col, wrap_pending
+    if wrap_pending:
+        row += 1
+        col = 0
+        wrap_pending = False
+        ensure_row(row)
+        mark_soft(row, True)
+
+def hard_newline():
+    global row, col, wrap_pending
+    wrap_pending = False
+    row += 1
+    col = 0
+    ensure_row(row)
+    mark_soft(row, False)
 
 def write_byte(b):
-    global col
+    global col, wrap_pending
+
+    before_printable()
+
     line = lines[row]
     while len(line) < col:
         line.append(0x20)
+
     if col < len(line):
         line[col] = b
     else:
         line.append(b)
-    col += 1
+
+    if col >= cols - 1:
+        col = cols - 1
+        wrap_pending = True
+    else:
+        col += 1
 
 def parse_params(s):
     s = s.replace("?", "")
@@ -71,32 +117,38 @@ while i < len(data):
             final = chr(data[j])
             params = parse_params(body)
 
+            clear_wrap_pending()
+
             if final == "A":
                 row = max(0, row - p(params, 0, 1))
                 ensure_row(row)
-                col = min(col, len(lines[row]))
+                clamp_col()
             elif final == "B":
                 row += p(params, 0, 1)
                 ensure_row(row)
-                col = min(col, len(lines[row]))
+                clamp_col()
             elif final == "C":
                 col += p(params, 0, 1)
+                clamp_col()
             elif final == "D":
                 col = max(0, col - p(params, 0, 1))
             elif final == "E":
                 row += p(params, 0, 1)
                 ensure_row(row)
                 col = 0
+                mark_soft(row, False)
             elif final == "F":
                 row = max(0, row - p(params, 0, 1))
                 ensure_row(row)
                 col = 0
             elif final == "G":
                 col = max(0, p(params, 0, 1) - 1)
+                clamp_col()
             elif final in ("H", "f"):
                 row = max(0, p(params, 0, 1) - 1)
                 col = max(0, p(params, 1, 1) - 1)
                 ensure_row(row)
+                clamp_col()
             elif final == "@":
                 n = max(1, p(params, 0, 1))
                 line = lines[row]
@@ -131,8 +183,10 @@ while i < len(data):
                 mode = p(params, 0, 0)
                 if mode == 2:
                     lines = [bytearray()]
+                    soft = [False]
                     row = 0
                     col = 0
+                    wrap_pending = False
 
             i = j + 1
             continue
@@ -158,28 +212,23 @@ while i < len(data):
         continue
 
     if b in (0x08, 0x7f):
+        clear_wrap_pending()
         col = max(0, col - 1)
         i += 1
         continue
 
     if b == 0x0d:
+        wrap_pending = False
+        col = 0
         if i + 1 < len(data) and data[i + 1] == 0x0a:
-            row += 1
-            col = 0
-            ensure_row(row)
+            hard_newline()
             i += 2
         else:
-            if col >= cols - 1:
-                i += 1
-            else:
-                col = 0
-                i += 1
+            i += 1
         continue
 
     if b == 0x0a:
-        row += 1
-        col = 0
-        ensure_row(row)
+        hard_newline()
         i += 1
         continue
 
@@ -190,7 +239,20 @@ while i < len(data):
     write_byte(b)
     i += 1
 
-out = b"\n".join(bytes(line).rstrip() for line in lines)
+logical = []
+
+for idx, line in enumerate(lines):
+    text = bytes(line).rstrip()
+
+    if idx > 0 and soft[idx]:
+        if logical:
+            logical[-1] += text
+        else:
+            logical.append(text)
+    else:
+        logical.append(text)
+
+out = b"\n".join(logical)
 
 if data.endswith(b"\n") or data.endswith(b"\r\n"):
     out += b"\n"
