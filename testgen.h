@@ -36,6 +36,9 @@ typedef struct {
 
 void editor_init(EditorBuffer *b);
 int editor_run(EditorBuffer *b, const char *title, const char *help1, const char *help2);
+int editor_run_regex(EditorBuffer *b, const char *title, const char *help1, const char *help2);
+void editor_set_single_line(EditorBuffer *b, const char *s);
+void editor_get_single_line(const EditorBuffer *b, char *out, int out_size);
 int generate_test_script(const TestCase *tc, const char *path);
 
 #endif
