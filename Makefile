@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-Wall -Wextra -O2
-LDFLAGS=-lncurses
+LDFLAGS=-lncursesw
 
 OBJS=main.o editor.o generator.o
 
