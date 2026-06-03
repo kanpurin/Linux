@@ -17,4 +17,4 @@ generator.o: generator.c testgen.h
 	$(CC) $(CFLAGS) -c generator.c
 
 clean:
-	rm -f $(OBJS) testgen test_generated.sh
+	rm -f *.o testgen test_generated.sh

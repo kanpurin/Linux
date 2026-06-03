@@ -1,165 +1,117 @@
 #include <ncurses.h>
 #include <string.h>
-#include <ctype.h>
-#include <stdlib.h>
 #include "testgen.h"
 
-static void clamp_cursor(EditorBuffer *buf) {
-    if (buf->line_count <= 0) buf->line_count = 1;
-    if (buf->cur_y < 0) buf->cur_y = 0;
-    if (buf->cur_y >= buf->line_count) buf->cur_y = buf->line_count - 1;
-    int len = (int)strlen(buf->lines[buf->cur_y]);
-    if (buf->cur_x < 0) buf->cur_x = 0;
-    if (buf->cur_x > len) buf->cur_x = len;
+static int min_int(int a, int b) { return a < b ? a : b; }
+
+void editor_init(EditorBuffer *b) {
+    memset(b, 0, sizeof(*b));
+    b->line_count = 1;
+    b->cy = 0;
+    b->cx = 0;
+    b->insert_mode = 1;
 }
 
-void init_buffer(EditorBuffer *buf) {
-    memset(buf, 0, sizeof(*buf));
-    buf->line_count = 1;
-    buf->cur_y = 0;
-    buf->cur_x = 0;
-    buf->insert_mode = 0;
-}
-
-static void insert_char(EditorBuffer *buf, int ch) {
-    char *line = buf->lines[buf->cur_y];
+static void insert_char(EditorBuffer *b, int ch) {
+    char *line = b->lines[b->cy];
     int len = (int)strlen(line);
     if (len >= MAX_COLS - 1) return;
-    memmove(&line[buf->cur_x + 1], &line[buf->cur_x], len - buf->cur_x + 1);
-    line[buf->cur_x] = (char)ch;
-    buf->cur_x++;
+    if (b->cx > len) b->cx = len;
+    memmove(&line[b->cx + 1], &line[b->cx], (size_t)(len - b->cx + 1));
+    line[b->cx] = (char)ch;
+    b->cx++;
 }
 
-static void split_line(EditorBuffer *buf) {
-    if (buf->line_count >= MAX_LINES) return;
-
-    char *line = buf->lines[buf->cur_y];
-    char tail[MAX_COLS];
-    strncpy(tail, &line[buf->cur_x], sizeof(tail) - 1);
-    tail[sizeof(tail) - 1] = '\0';
-    line[buf->cur_x] = '\0';
-
-    for (int i = buf->line_count; i > buf->cur_y + 1; i--) {
-        strncpy(buf->lines[i], buf->lines[i - 1], MAX_COLS);
-    }
-    strncpy(buf->lines[buf->cur_y + 1], tail, MAX_COLS);
-    buf->line_count++;
-    buf->cur_y++;
-    buf->cur_x = 0;
-}
-
-static void backspace(EditorBuffer *buf) {
-    if (buf->cur_x > 0) {
-        char *line = buf->lines[buf->cur_y];
+static void backspace(EditorBuffer *b) {
+    if (b->cx > 0) {
+        char *line = b->lines[b->cy];
         int len = (int)strlen(line);
-        memmove(&line[buf->cur_x - 1], &line[buf->cur_x], len - buf->cur_x + 1);
-        buf->cur_x--;
+        memmove(&line[b->cx - 1], &line[b->cx], (size_t)(len - b->cx + 1));
+        b->cx--;
         return;
     }
-
-    if (buf->cur_y > 0) {
-        int prev_len = (int)strlen(buf->lines[buf->cur_y - 1]);
-        int cur_len = (int)strlen(buf->lines[buf->cur_y]);
-        if (prev_len + cur_len < MAX_COLS) {
-            strcat(buf->lines[buf->cur_y - 1], buf->lines[buf->cur_y]);
-            for (int i = buf->cur_y; i < buf->line_count - 1; i++) {
-                strncpy(buf->lines[i], buf->lines[i + 1], MAX_COLS);
+    if (b->cy > 0) {
+        int prev_len = (int)strlen(b->lines[b->cy - 1]);
+        int cur_len = (int)strlen(b->lines[b->cy]);
+        if (prev_len + cur_len < MAX_COLS - 1) {
+            strcat(b->lines[b->cy - 1], b->lines[b->cy]);
+            for (int i = b->cy; i < b->line_count - 1; i++) {
+                strcpy(b->lines[i], b->lines[i + 1]);
             }
-            buf->lines[buf->line_count - 1][0] = '\0';
-            buf->line_count--;
-            buf->cur_y--;
-            buf->cur_x = prev_len;
+            b->line_count--;
+            b->cy--;
+            b->cx = prev_len;
         }
     }
 }
 
-static void draw_editor(const EditorBuffer *buf, const char *title, const char *hint, int top_line) {
-    clear();
-    mvprintw(0, 0, "%s", title);
-    mvprintw(1, 0, "%s", hint);
-    mvprintw(2, 0, "mode: %s | i:insert Esc:command Ctrl+S:next Ctrl+Q:quit", buf->insert_mode ? "INSERT" : "COMMAND");
-    mvhline(3, 0, '-', COLS);
-
-    int body_top = 4;
-    int body_h = LINES - body_top - 1;
-    for (int row = 0; row < body_h; row++) {
-        int idx = top_line + row;
-        if (idx >= buf->line_count) break;
-        mvprintw(body_top + row, 0, "%4d %.*s", idx + 1, COLS - 6, buf->lines[idx]);
+static void newline(EditorBuffer *b) {
+    if (b->line_count >= MAX_LINES) return;
+    char tail[MAX_COLS];
+    char *line = b->lines[b->cy];
+    int len = (int)strlen(line);
+    if (b->cx > len) b->cx = len;
+    strcpy(tail, &line[b->cx]);
+    line[b->cx] = '\0';
+    for (int i = b->line_count; i > b->cy + 1; i--) {
+        strcpy(b->lines[i], b->lines[i - 1]);
     }
+    strcpy(b->lines[b->cy + 1], tail);
+    b->line_count++;
+    b->cy++;
+    b->cx = 0;
+}
 
-    mvprintw(LINES - 1, 0, "lines:%d", buf->line_count);
-    int screen_y = body_top + (buf->cur_y - top_line);
-    int screen_x = 5 + buf->cur_x;
-    move(screen_y, screen_x);
+static void draw_editor(const EditorBuffer *b, const char *title, const char *help1, const char *help2) {
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    erase();
+    mvprintw(0, 0, "testgen - %s", title);
+    mvhline(1, 0, '-', cols);
+    mvprintw(2, 0, "%s", help1);
+    mvprintw(3, 0, "%s", help2);
+    mvhline(4, 0, '-', cols);
+
+    int view_h = rows - 7;
+    int top = 0;
+    if (b->cy >= view_h) top = b->cy - view_h + 1;
+    for (int i = 0; i < view_h && top + i < b->line_count; i++) {
+        mvprintw(5 + i, 0, "%4d  ", top + i + 1);
+        addnstr(b->lines[top + i], cols - 7);
+    }
+    mvhline(rows - 2, 0, '-', cols);
+    mvprintw(rows - 1, 0, "MODE:%s  i:insert  ESC:command  F2:next/save  F10:quit", b->insert_mode ? "INSERT" : "COMMAND");
+    move(5 + b->cy - top, 6 + b->cx);
     refresh();
 }
 
-int edit_buffer(EditorBuffer *buf, const char *title, const char *hint) {
-    int top_line = 0;
+int editor_run(EditorBuffer *b, const char *title, const char *help1, const char *help2) {
     int ch;
     keypad(stdscr, TRUE);
-
     while (1) {
-        int body_h = LINES - 5;
-        if (buf->cur_y < top_line) top_line = buf->cur_y;
-        if (buf->cur_y >= top_line + body_h) top_line = buf->cur_y - body_h + 1;
-        draw_editor(buf, title, hint, top_line);
-
+        draw_editor(b, title, help1, help2);
         ch = getch();
-        if (ch == 17) return 0;   /* Ctrl+Q */
-        if (ch == 19) return 1;   /* Ctrl+S */
+        if (ch == KEY_F(10)) return 0; /* quit */
+        if (ch == KEY_F(2)) return 1;  /* next */
+        if (ch == 27) { b->insert_mode = 0; continue; }
+        if (!b->insert_mode && ch == 'i') { b->insert_mode = 1; continue; }
 
-        if (!buf->insert_mode) {
-            if (ch == 'i') buf->insert_mode = 1;
-            else if (ch == KEY_UP || ch == 'k') buf->cur_y--;
-            else if (ch == KEY_DOWN || ch == 'j') buf->cur_y++;
-            else if (ch == KEY_LEFT || ch == 'h') buf->cur_x--;
-            else if (ch == KEY_RIGHT || ch == 'l') buf->cur_x++;
-            clamp_cursor(buf);
-            continue;
+        if (ch == KEY_UP && b->cy > 0) {
+            b->cy--;
+            b->cx = min_int(b->cx, (int)strlen(b->lines[b->cy]));
+        } else if (ch == KEY_DOWN && b->cy < b->line_count - 1) {
+            b->cy++;
+            b->cx = min_int(b->cx, (int)strlen(b->lines[b->cy]));
+        } else if (ch == KEY_LEFT && b->cx > 0) {
+            b->cx--;
+        } else if (ch == KEY_RIGHT && b->cx < (int)strlen(b->lines[b->cy])) {
+            b->cx++;
+        } else if (b->insert_mode && (ch == KEY_BACKSPACE || ch == 127 || ch == 8)) {
+            backspace(b);
+        } else if (b->insert_mode && (ch == '\n' || ch == '\r' || ch == KEY_ENTER)) {
+            newline(b);
+        } else if (b->insert_mode && ch >= 32 && ch <= 126) {
+            insert_char(b, ch);
         }
-
-        if (ch == 27) {
-            buf->insert_mode = 0;
-        } else if (ch == KEY_UP) {
-            buf->cur_y--;
-        } else if (ch == KEY_DOWN) {
-            buf->cur_y++;
-        } else if (ch == KEY_LEFT) {
-            buf->cur_x--;
-        } else if (ch == KEY_RIGHT) {
-            buf->cur_x++;
-        } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-            backspace(buf);
-        } else if (ch == '\n' || ch == '\r') {
-            split_line(buf);
-        } else if (isprint(ch)) {
-            insert_char(buf, ch);
-        }
-        clamp_cursor(buf);
     }
-}
-
-int input_text(const char *title, const char *label, char *out, int out_size) {
-    clear();
-    mvprintw(0, 0, "%s", title);
-    mvprintw(2, 0, "%s", label);
-    echo();
-    curs_set(1);
-    move(2, (int)strlen(label));
-    int rc = getnstr(out, out_size - 1);
-    noecho();
-    curs_set(0);
-    return rc == ERR ? 0 : 1;
-}
-
-int input_long_value(const char *title, const char *label, long *out) {
-    char buf[64];
-    if (!input_text(title, label, buf, sizeof(buf))) return 0;
-    char *end = NULL;
-    long val = strtol(buf, &end, 10);
-    if (end == buf || *end != '\0') return 0;
-    *out = val;
-    return 1;
 }
